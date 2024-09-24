@@ -1,6 +1,7 @@
 import numpy as np
 import sympy as sp
 import scipy.sparse as sparse
+import scipy.interpolate as spintp
 
 x, y = sp.symbols('x,y')
 
@@ -32,29 +33,74 @@ class Poisson2D:
 
     def create_mesh(self, N):
         """Create 2D mesh and store in self.xij and self.yij"""
-        # self.xij, self.yij ...
-        raise NotImplementedError
+        self.N = N
+        self.h = 1/N
+        x = np.linspace(0, self.L, N+1)
+        self.x = x
+        self.xij, self.yij = np.meshgrid(x, x, indexing='ij', sparse=True)
+        return self.xij, self.yij
+
 
     def D2(self):
         """Return second order differentiation matrix"""
-        raise NotImplementedError
+        D = sparse.diags([1, -2, 1], [-1, 0, 1], (self.N+1, self.N+1), 'lil')
+        D[0, :4] = 2, -5, 4, -1
+        D[-1, -4:] = -1, 4, -5, 2
+        D /= self.h**2
+        return D
 
     def laplace(self):
         """Return vectorized Laplace operator"""
-        raise NotImplementedError
+        D2 = self.D2()
+        laplace = (sparse.kron(D2, sparse.eye(self.N+1)) +
+            sparse.kron(sparse.eye(self.N+1), D2))
+        return laplace
 
     def get_boundary_indices(self):
         """Return indices of vectorized matrix that belongs to the boundary"""
-        raise NotImplementedError
+        B = np.ones((self.N+1, self.N+1), dtype=bool)
+        B[1:-1, 1:-1] = 0
+        bnds = np.where(B.ravel() == 1)[0]
+        return bnds, B
 
     def assemble(self):
         """Return assembled matrix A and right hand side vector b"""
         # return A, b
-        raise NotImplementedError
+        xij, yij = self.xij, self.yij
+        A = self.laplace()
+        b = sp.lambdify((x, y), self.f)(xij, yij).ravel()
+        
+        bnds, B = self.get_boundary_indices()
+        A = A.tolil()
+        for i in bnds:
+            A[i] = 0
+            A[i, i] = 1
+        A = A.tocsr()
+        
+        #Set bdry condition
+        B_sparse = sparse.csr_matrix(B)
+        boundary_indices = B_sparse.nonzero()
+        bdry_x_inds, bdry_y_inds = boundary_indices
+        bdry_x = xij[bdry_x_inds,0]
+        bdry_y = yij[0,bdry_y_inds]
+        
+        if self.ue == None:
+            b[bnds] = 0
+        else:
+            # Evaluate boundary condition
+            bc_func = sp.lambdify((x, y), self.ue)
+            b[bnds] = bc_func(bdry_x, bdry_y)
+        
+        return A, b
+
 
     def l2_error(self, u):
         """Return l2-error norm"""
-        raise NotImplementedError
+        xij, yij = self.xij, self.yij
+        uj = sp.lambdify((x, y), self.ue)(xij, yij)
+        h = self.h
+        return np.sqrt(h**2*np.sum((uj-u)**2))
+
 
     def __call__(self, N):
         """Solve Poisson's equation.
@@ -113,8 +159,10 @@ class Poisson2D:
         The value of u(x, y)
 
         """
-        raise NotImplementedError
-
+        interpolator = spintp.RegularGridInterpolator((self.x, self.x), self.U)
+        interpolated_eval = interpolator(np.array([x, y]))
+        return interpolated_eval
+        
 def test_convergence_poisson2d():
     # This exact solution is NOT zero on the entire boundary
     ue = sp.exp(sp.cos(4*sp.pi*x)*sp.sin(2*sp.pi*y))
@@ -129,3 +177,6 @@ def test_interpolation():
     assert abs(sol.eval(0.52, 0.63) - ue.subs({x: 0.52, y: 0.63}).n()) < 1e-3
     assert abs(sol.eval(sol.h/2, 1-sol.h/2) - ue.subs({x: sol.h/2, y: 1-sol.h/2}).n()) < 1e-3
 
+
+test_interpolation()
+test_convergence_poisson2d()
